@@ -129,8 +129,8 @@ func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.Housi
 	const upsertSQL = `
 		INSERT INTO youth_housing.housings
 			(home_code, home_name, address, address_gu, option_subway,
-			 supply_status, deposit_low, rental_low, detail_scraped, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, NOW())
+			 supply_status, deposit_low, rental_low, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (home_code) DO UPDATE SET
 			home_name     = EXCLUDED.home_name,
 			supply_status = EXCLUDED.supply_status,
