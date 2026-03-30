@@ -21,7 +21,7 @@ func Load() Config {
 		Port:             os.Getenv("PORT"),
 		CORSOrigins:      os.Getenv("CORS_ORIGINS"),
 		SyncEnabled:      os.Getenv("HOUSING_SYNC_ENABLED") != "false",
-		SyncIntervalMins: 60,
+		SyncIntervalMins: 30,
 		AdminKey:         os.Getenv("ADMIN_KEY"),
 	}
 	if c.Port == "" {
