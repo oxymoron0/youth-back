@@ -15,6 +15,9 @@ type mockHousingRepo struct {
 	upsertNew     int
 	upsertErr     error
 	upsertCalled  bool
+	saveCalled    bool
+	saveResult    model.HousingSyncResult
+	saveErr       error
 }
 
 func (m *mockHousingRepo) List(_ context.Context) ([]model.HousingListItem, error) {
@@ -32,6 +35,20 @@ func (m *mockHousingRepo) NearbyStations(_ context.Context, _ string, _ int) ([]
 func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, int, error) {
 	m.upsertCalled = true
 	return m.upsertUpdated, m.upsertNew, m.upsertErr
+}
+
+func (m *mockHousingRepo) SaveSyncResult(_ context.Context, result model.HousingSyncResult) error {
+	m.saveCalled = true
+	m.saveResult = result
+	return m.saveErr
+}
+
+func (m *mockHousingRepo) LatestSyncResult(_ context.Context) (*model.HousingSyncResult, error) {
+	return nil, nil
+}
+
+func (m *mockHousingRepo) RecentSyncHistory(_ context.Context, _ int) ([]model.HousingSyncResult, error) {
+	return nil, nil
 }
 
 func newTestServer(response string) *httptest.Server {
@@ -70,6 +87,35 @@ func TestRunOnce_Success(t *testing.T) {
 	}
 	if !repo.upsertCalled {
 		t.Error("UpsertFromListAPI was not called")
+	}
+	if !repo.saveCalled {
+		t.Error("SaveSyncResult was not called")
+	}
+	if repo.saveResult.FetchedCount != 2 || repo.saveResult.UpdatedCount != 1 || repo.saveResult.NewCount != 1 {
+		t.Errorf("saved result mismatch: %+v", repo.saveResult)
+	}
+	if repo.saveResult.DurationMs < 0 {
+		t.Errorf("expected non-negative duration, got %d", repo.saveResult.DurationMs)
+	}
+}
+
+func TestRunOnce_PersistsOnFetchError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	repo := &mockHousingRepo{}
+	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	syncer.RunOnce(context.Background())
+
+	if !repo.saveCalled {
+		t.Error("SaveSyncResult should be called even on fetch error")
+	}
+	if repo.saveResult.Error == "" {
+		t.Error("saved result should contain error message")
 	}
 }
 

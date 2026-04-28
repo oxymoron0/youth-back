@@ -20,6 +20,7 @@ type HousingSyncResult struct {
 	UpdatedCount int       `json:"updated_count"`
 	NewCount     int       `json:"new_count"`
 	Duration     string    `json:"duration"`
+	DurationMs   int64     `json:"duration_ms"`
 	StartedAt    time.Time `json:"started_at"`
 	CompletedAt  time.Time `json:"completed_at"`
 	Error        string    `json:"error,omitempty"`

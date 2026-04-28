@@ -81,9 +81,7 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	items, err := s.client.FetchList(ctx)
 	if err != nil {
 		result.Error = err.Error()
-		result.CompletedAt = time.Now()
-		result.Duration = time.Since(startedAt).String()
-		s.lastResult.Store(&result)
+		s.finalize(ctx, &result, startedAt)
 		return result
 	}
 	result.FetchedCount = len(items)
@@ -91,18 +89,27 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	updated, newCount, err := s.repo.UpsertFromListAPI(ctx, items)
 	if err != nil {
 		result.Error = err.Error()
-		result.CompletedAt = time.Now()
-		result.Duration = time.Since(startedAt).String()
-		s.lastResult.Store(&result)
+		s.finalize(ctx, &result, startedAt)
 		return result
 	}
 
 	result.UpdatedCount = updated
 	result.NewCount = newCount
-	result.CompletedAt = time.Now()
-	result.Duration = time.Since(startedAt).String()
-	s.lastResult.Store(&result)
+	s.finalize(ctx, &result, startedAt)
 	return result
+}
+
+func (s *HousingSync) finalize(ctx context.Context, result *model.HousingSyncResult, startedAt time.Time) {
+	elapsed := time.Since(startedAt)
+	result.CompletedAt = time.Now()
+	result.Duration = elapsed.String()
+	result.DurationMs = elapsed.Milliseconds()
+	s.lastResult.Store(result)
+
+	// Persist to DB; failure must not break the sync.
+	if err := s.repo.SaveSyncResult(ctx, *result); err != nil {
+		s.logger.Error("save sync_history failed", "error", err)
+	}
 }
 
 // LastResult returns the most recent sync result.

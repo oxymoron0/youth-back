@@ -19,6 +19,8 @@ type mockHousingRepo struct {
 	listItems      []model.HousingListItem
 	detail         *model.HousingDetail
 	nearbyStations []model.NearbyStation
+	latestSync     *model.HousingSyncResult
+	historySync    []model.HousingSyncResult
 	err            error
 }
 
@@ -36,6 +38,18 @@ func (m *mockHousingRepo) NearbyStations(_ context.Context, _ string, _ int) ([]
 
 func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, int, error) {
 	return 0, 0, nil
+}
+
+func (m *mockHousingRepo) SaveSyncResult(_ context.Context, _ model.HousingSyncResult) error {
+	return nil
+}
+
+func (m *mockHousingRepo) LatestSyncResult(_ context.Context) (*model.HousingSyncResult, error) {
+	return m.latestSync, m.err
+}
+
+func (m *mockHousingRepo) RecentSyncHistory(_ context.Context, _ int) ([]model.HousingSyncResult, error) {
+	return m.historySync, m.err
 }
 
 func setupHousingRouter(mock *mockHousingRepo) *gin.Engine {

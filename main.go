@@ -42,6 +42,16 @@ func main() {
 	r := gin.Default()
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
+	var housingSync *sync.HousingSync
+	if cfg.SyncEnabled {
+		housingClient := sync.NewHousingClient()
+		housingSync = sync.NewHousingSync(housingClient, housingRepo,
+			sync.WithInterval(time.Duration(cfg.SyncIntervalMins)*time.Minute),
+		)
+		go housingSync.Start(ctx)
+	}
+	syncH := handler.NewSyncHandler(housingSync, housingRepo, cfg.AdminKey)
+
 	v1 := r.Group("/api/v1")
 	{
 		v1.GET("/stations", stationH.List)
@@ -55,17 +65,12 @@ func main() {
 		v1.GET("/housings", housingH.List)
 		v1.GET("/housings/:home_code", housingH.GetByHomeCode)
 		v1.GET("/housings/:home_code/nearby-stations", housingH.NearbyStations)
+		v1.GET("/housings/sync/latest", syncH.PublicLatestStatus)
+		v1.GET("/housings/sync/history", syncH.PublicHistory)
 	}
 	r.GET("/healthz", handler.Health(pool))
 
 	if cfg.SyncEnabled {
-		housingClient := sync.NewHousingClient()
-		housingSync := sync.NewHousingSync(housingClient, housingRepo,
-			sync.WithInterval(time.Duration(cfg.SyncIntervalMins)*time.Minute),
-		)
-		go housingSync.Start(ctx)
-
-		syncH := handler.NewSyncHandler(housingSync, cfg.AdminKey)
 		admin := r.Group("/api/v1/admin")
 		admin.POST("/sync/housing", syncH.TriggerHousingSync)
 		admin.GET("/sync/status", syncH.SyncStatus)

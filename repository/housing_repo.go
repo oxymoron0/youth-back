@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +17,9 @@ type HousingRepository interface {
 	GetByHomeCode(ctx context.Context, homeCode string) (*model.HousingDetail, error)
 	NearbyStations(ctx context.Context, homeCode string, distanceMeters int) ([]model.NearbyStation, error)
 	UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated, newCount int, err error)
+	SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error
+	LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error)
+	RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error)
 }
 
 type HousingRepo struct {
@@ -172,6 +176,90 @@ func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.Housi
 	}
 
 	return updated, newCount, nil
+}
+
+func (r *HousingRepo) SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error {
+	var errVal *string
+	if result.Error != "" {
+		e := result.Error
+		errVal = &e
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO youth_housing.sync_history
+			(started_at, completed_at, duration_ms, fetched_count, updated_count, new_count, error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, result.StartedAt, result.CompletedAt, result.DurationMs,
+		result.FetchedCount, result.UpdatedCount, result.NewCount, errVal)
+	if err != nil {
+		return fmt.Errorf("insert sync_history: %w", err)
+	}
+	return nil
+}
+
+func (r *HousingRepo) LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT started_at, completed_at, duration_ms,
+		       fetched_count, updated_count, new_count, error
+		FROM youth_housing.sync_history
+		ORDER BY started_at DESC
+		LIMIT 1
+	`)
+	res, err := scanSyncResult(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query latest sync_history: %w", err)
+	}
+	return &res, nil
+}
+
+func (r *HousingRepo) RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT started_at, completed_at, duration_ms,
+		       fetched_count, updated_count, new_count, error
+		FROM youth_housing.sync_history
+		ORDER BY started_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query sync_history: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]model.HousingSyncResult, 0, limit)
+	for rows.Next() {
+		res, err := scanSyncResult(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan sync_history: %w", err)
+		}
+		results = append(results, res)
+	}
+	return results, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSyncResult(row rowScanner) (model.HousingSyncResult, error) {
+	var res model.HousingSyncResult
+	var errVal *string
+	if err := row.Scan(&res.StartedAt, &res.CompletedAt, &res.DurationMs,
+		&res.FetchedCount, &res.UpdatedCount, &res.NewCount, &errVal); err != nil {
+		return res, err
+	}
+	if errVal != nil {
+		res.Error = *errVal
+	}
+	res.Duration = (time.Duration(res.DurationMs) * time.Millisecond).String()
+	return res, nil
 }
 
 // parseMoney handles the Seoul API's mixed int/string money fields.
