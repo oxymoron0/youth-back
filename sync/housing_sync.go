@@ -12,6 +12,11 @@ import (
 
 const defaultInterval = 60 * time.Minute
 
+// blockedHomeCodes lists upstream API records to drop on sync (test/dummy data).
+var blockedHomeCodes = map[string]struct{}{
+	"20000594": {}, // home_name="test26", upstream test record
+}
+
 type HousingSync struct {
 	client     *HousingClient
 	repo       repository.HousingRepository
@@ -84,6 +89,17 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 		s.finalize(ctx, &result, startedAt)
 		return result
 	}
+
+	kept := items[:0]
+	for _, item := range items {
+		if _, blocked := blockedHomeCodes[item.HomeCode]; blocked {
+			s.logger.Info("skipped blocked housing",
+				"home_code", item.HomeCode, "home_name", item.HomeName)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	items = kept
 	result.FetchedCount = len(items)
 
 	updated, newCount, err := s.repo.UpsertFromListAPI(ctx, items)

@@ -99,6 +99,29 @@ func TestRunOnce_Success(t *testing.T) {
 	}
 }
 
+func TestRunOnce_SkipsBlockedHomeCodes(t *testing.T) {
+	ts := newTestServer(`{
+		"resultList": [
+			{"homeCode": "20000594", "homeName": "test26", "supplyStatus": "02"},
+			{"homeCode": "20000352", "homeName": "충정로역 어바니엘", "supplyStatus": "05"}
+		]
+	}`)
+	defer ts.Close()
+
+	repo := &mockHousingRepo{upsertUpdated: 1}
+	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	result := syncer.RunOnce(context.Background())
+
+	if result.FetchedCount != 1 {
+		t.Errorf("expected fetched 1 (blocked filtered), got %d", result.FetchedCount)
+	}
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+}
+
 func TestRunOnce_PersistsOnFetchError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
