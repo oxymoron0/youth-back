@@ -45,8 +45,8 @@ func TestPublicLatestStatus_FromDB(t *testing.T) {
 	}
 
 	var resp struct {
-		Status string                   `json:"status"`
-		Result model.HousingSyncResult  `json:"result"`
+		Status string                  `json:"status"`
+		Result model.HousingSyncResult `json:"result"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json unmarshal: %v", err)

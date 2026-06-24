@@ -18,6 +18,12 @@ type mockHousingRepo struct {
 	saveCalled    bool
 	saveResult    model.HousingSyncResult
 	saveErr       error
+	// image tracking
+	imageRefs map[string]struct {
+		fileID string
+		fileSn int
+	}
+	upsertedImages []model.HousingImage
 }
 
 func (m *mockHousingRepo) List(_ context.Context) ([]model.HousingListItem, error) {
@@ -48,6 +54,26 @@ func (m *mockHousingRepo) LatestSyncResult(_ context.Context) (*model.HousingSyn
 }
 
 func (m *mockHousingRepo) RecentSyncHistory(_ context.Context, _ int) ([]model.HousingSyncResult, error) {
+	return nil, nil
+}
+
+func (m *mockHousingRepo) ImageRef(_ context.Context, homeCode string) (string, int, bool, error) {
+	if m.imageRefs == nil {
+		return "", 0, false, nil
+	}
+	ref, ok := m.imageRefs[homeCode]
+	if !ok {
+		return "", 0, false, nil
+	}
+	return ref.fileID, ref.fileSn, true, nil
+}
+
+func (m *mockHousingRepo) UpsertImage(_ context.Context, img model.HousingImage) error {
+	m.upsertedImages = append(m.upsertedImages, img)
+	return nil
+}
+
+func (m *mockHousingRepo) GetImage(_ context.Context, _ string) (*model.HousingImage, error) {
 	return nil, nil
 }
 
@@ -204,6 +230,86 @@ func TestLastResult(t *testing.T) {
 	}
 	if last.FetchedCount != 1 {
 		t.Errorf("expected fetched 1, got %d", last.FetchedCount)
+	}
+}
+
+func newListAndImageServer(listJSON string, imageBytes []byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("atchFileId") != "" {
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(imageBytes)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(listJSON))
+	}))
+}
+
+func TestSyncImages_DownloadsAndStores(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02}
+	ts := newListAndImageServer(`{
+		"resultList": [
+			{"homeCode": "H001", "homeName": "A", "supplyStatus": "02", "fileId": "abc123", "fileSn": 1},
+			{"homeCode": "H002", "homeName": "B", "supplyStatus": "03"}
+		]
+	}`, imgBytes)
+	defer ts.Close()
+
+	repo := &mockHousingRepo{upsertUpdated: 2}
+	client := NewHousingClient().
+		WithHTTPClient(ts.Client()).
+		WithListURL(ts.URL).
+		WithImageURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	syncer.RunOnce(context.Background())
+
+	// Only H001 has a fileId -> exactly one image stored.
+	if len(repo.upsertedImages) != 1 {
+		t.Fatalf("expected 1 image upserted, got %d", len(repo.upsertedImages))
+	}
+	got := repo.upsertedImages[0]
+	if got.HomeCode != "H001" || got.FileID != "abc123" || got.FileSn != 1 {
+		t.Errorf("unexpected image ref: %+v", got)
+	}
+	if string(got.Data) != string(imgBytes) {
+		t.Errorf("image bytes mismatch")
+	}
+	if got.ContentType != "image/png" {
+		t.Errorf("expected image/png, got %s", got.ContentType)
+	}
+	if got.ETag == "" {
+		t.Error("expected non-empty etag")
+	}
+}
+
+func TestSyncImages_SkipsUnchanged(t *testing.T) {
+	ts := newListAndImageServer(`{
+		"resultList": [
+			{"homeCode": "H001", "homeName": "A", "supplyStatus": "02", "fileId": "abc123", "fileSn": 1}
+		]
+	}`, []byte{0x01})
+	defer ts.Close()
+
+	repo := &mockHousingRepo{
+		upsertUpdated: 1,
+		imageRefs: map[string]struct {
+			fileID string
+			fileSn int
+		}{
+			"H001": {fileID: "abc123", fileSn: 1},
+		},
+	}
+	client := NewHousingClient().
+		WithHTTPClient(ts.Client()).
+		WithListURL(ts.URL).
+		WithImageURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	syncer.RunOnce(context.Background())
+
+	if len(repo.upsertedImages) != 0 {
+		t.Fatalf("expected 0 image upserts (unchanged ref), got %d", len(repo.upsertedImages))
 	}
 }
 

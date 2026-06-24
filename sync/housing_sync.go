@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -111,8 +113,67 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 
 	result.UpdatedCount = updated
 	result.NewCount = newCount
+
+	// Best-effort: download representative images. Image failures must not
+	// fail the sync cycle (images are auxiliary to the housing data).
+	s.syncImages(ctx, items)
+
 	s.finalize(ctx, &result, startedAt)
 	return result
+}
+
+// syncImages downloads each housing's representative image (from the list API's
+// fileId/fileSn) and stores the bytes, skipping any image whose source reference
+// is unchanged since the last fetch.
+func (s *HousingSync) syncImages(ctx context.Context, items []model.HousingSyncItem) {
+	var fetched, skipped, failed int
+	for _, item := range items {
+		if ctx.Err() != nil {
+			return
+		}
+		if item.FileID == "" {
+			continue
+		}
+		fileSn := item.FileSn
+		if fileSn <= 0 {
+			fileSn = 1
+		}
+
+		if curID, curSn, ok, err := s.repo.ImageRef(ctx, item.HomeCode); err == nil &&
+			ok && curID == item.FileID && curSn == fileSn {
+			skipped++
+			continue
+		}
+
+		data, contentType, err := s.client.FetchImage(ctx, item.FileID, fileSn)
+		if err != nil {
+			failed++
+			s.logger.Warn("housing image fetch failed",
+				"home_code", item.HomeCode, "file_id", item.FileID, "error", err)
+			continue
+		}
+
+		sum := sha256.Sum256(data)
+		img := model.HousingImage{
+			HomeCode:    item.HomeCode,
+			FileID:      item.FileID,
+			FileSn:      fileSn,
+			ContentType: contentType,
+			ETag:        hex.EncodeToString(sum[:]),
+			Data:        data,
+		}
+		if err := s.repo.UpsertImage(ctx, img); err != nil {
+			failed++
+			s.logger.Warn("housing image store failed",
+				"home_code", item.HomeCode, "error", err)
+			continue
+		}
+		fetched++
+	}
+	if fetched > 0 || failed > 0 {
+		s.logger.Info("housing images synced",
+			"fetched", fetched, "skipped", skipped, "failed", failed)
+	}
 }
 
 func (s *HousingSync) finalize(ctx context.Context, result *model.HousingSyncResult, startedAt time.Time) {

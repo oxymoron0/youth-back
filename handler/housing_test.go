@@ -21,6 +21,7 @@ type mockHousingRepo struct {
 	nearbyStations []model.NearbyStation
 	latestSync     *model.HousingSyncResult
 	historySync    []model.HousingSyncResult
+	image          *model.HousingImage
 	err            error
 }
 
@@ -52,6 +53,18 @@ func (m *mockHousingRepo) RecentSyncHistory(_ context.Context, _ int) ([]model.H
 	return m.historySync, m.err
 }
 
+func (m *mockHousingRepo) ImageRef(_ context.Context, _ string) (string, int, bool, error) {
+	return "", 0, false, nil
+}
+
+func (m *mockHousingRepo) UpsertImage(_ context.Context, _ model.HousingImage) error {
+	return nil
+}
+
+func (m *mockHousingRepo) GetImage(_ context.Context, _ string) (*model.HousingImage, error) {
+	return m.image, m.err
+}
+
 func setupHousingRouter(mock *mockHousingRepo) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -59,6 +72,7 @@ func setupHousingRouter(mock *mockHousingRepo) *gin.Engine {
 	v1 := r.Group("/api/v1")
 	v1.GET("/housings", h.List)
 	v1.GET("/housings/:home_code", h.GetByHomeCode)
+	v1.GET("/housings/:home_code/image", h.GetImage)
 	v1.GET("/housings/:home_code/nearby-stations", h.NearbyStations)
 	return r
 }
@@ -150,6 +164,72 @@ func TestHousingGetByHomeCode_NotFound(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/api/v1/housings/NONEXIST", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHousingGetImage_OK(t *testing.T) {
+	mock := &mockHousingRepo{
+		image: &model.HousingImage{
+			HomeCode:    "H001",
+			ContentType: "image/png",
+			ETag:        "deadbeef",
+			Data:        []byte{0x89, 0x50, 0x4E, 0x47},
+		},
+	}
+	r := setupHousingRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/housings/H001/image", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("expected image/png, got %s", ct)
+	}
+	if etag := w.Header().Get("ETag"); etag != `"deadbeef"` {
+		t.Errorf("expected quoted etag, got %s", etag)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc == "" {
+		t.Error("expected Cache-Control header")
+	}
+	if w.Body.Len() != 4 {
+		t.Errorf("expected 4 bytes, got %d", w.Body.Len())
+	}
+}
+
+func TestHousingGetImage_NotModified(t *testing.T) {
+	mock := &mockHousingRepo{
+		image: &model.HousingImage{
+			HomeCode: "H001", ContentType: "image/png", ETag: "deadbeef", Data: []byte{0x89},
+		},
+	}
+	r := setupHousingRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/housings/H001/image", nil)
+	req.Header.Set("If-None-Match", `"deadbeef"`)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("expected empty body on 304, got %d bytes", w.Body.Len())
+	}
+}
+
+func TestHousingGetImage_NotFound(t *testing.T) {
+	mock := &mockHousingRepo{image: nil}
+	r := setupHousingRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/housings/NONEXIST/image", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {

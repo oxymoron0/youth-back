@@ -20,6 +20,9 @@ type HousingRepository interface {
 	SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error
 	LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error)
 	RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error)
+	ImageRef(ctx context.Context, homeCode string) (fileID string, fileSn int, ok bool, err error)
+	UpsertImage(ctx context.Context, img model.HousingImage) error
+	GetImage(ctx context.Context, homeCode string) (*model.HousingImage, error)
 }
 
 type HousingRepo struct {
@@ -68,18 +71,19 @@ func (r *HousingRepo) List(ctx context.Context) ([]model.HousingListItem, error)
 func (r *HousingRepo) GetByHomeCode(ctx context.Context, homeCode string) (*model.HousingDetail, error) {
 	var d model.HousingDetail
 	err := r.pool.QueryRow(ctx, `
-		SELECT housing_id, home_code, home_name, address, address_gu,
-		       option_subway, supply_status, deposit_low, rental_low,
-		       homepage_url, phone,
-		       to_char(first_recruit_date, 'YYYY-MM-DD'),
-		       to_char(move_in_date, 'YYYY-MM-DD'),
-		       total_units, developer, constructor, latitude, longitude
-		FROM youth_housing.housings
-		WHERE home_code = $1
+		SELECT h.housing_id, h.home_code, h.home_name, h.address, h.address_gu,
+		       h.option_subway, h.supply_status, h.deposit_low, h.rental_low,
+		       h.homepage_url, h.phone,
+		       to_char(h.first_recruit_date, 'YYYY-MM-DD'),
+		       to_char(h.move_in_date, 'YYYY-MM-DD'),
+		       h.total_units, h.developer, h.constructor, h.latitude, h.longitude,
+		       EXISTS(SELECT 1 FROM youth_housing.housing_images i WHERE i.home_code = h.home_code) AS has_image
+		FROM youth_housing.housings h
+		WHERE h.home_code = $1
 	`, homeCode).Scan(&d.HousingID, &d.HomeCode, &d.HomeName, &d.Address, &d.AddressGu,
 		&d.OptionSubway, &d.SupplyStatus, &d.DepositLow, &d.RentalLow,
 		&d.HomepageURL, &d.Phone, &d.FirstRecruitDate, &d.MoveInDate,
-		&d.TotalUnits, &d.Developer, &d.Constructor, &d.Latitude, &d.Longitude)
+		&d.TotalUnits, &d.Developer, &d.Constructor, &d.Latitude, &d.Longitude, &d.HasImage)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -176,6 +180,64 @@ func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.Housi
 	}
 
 	return updated, newCount, nil
+}
+
+// ImageRef returns the stored image's source reference (file_id, file_sn) for a
+// housing, so the sync can skip re-downloading unchanged images. ok=false means
+// no image is stored yet.
+func (r *HousingRepo) ImageRef(ctx context.Context, homeCode string) (string, int, bool, error) {
+	var fileID string
+	var fileSn int
+	err := r.pool.QueryRow(ctx, `
+		SELECT file_id, file_sn FROM youth_housing.housing_images WHERE home_code = $1
+	`, homeCode).Scan(&fileID, &fileSn)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", 0, false, nil
+		}
+		return "", 0, false, fmt.Errorf("query image ref: %w", err)
+	}
+	return fileID, fileSn, true, nil
+}
+
+// UpsertImage stores or replaces a housing's representative image bytes.
+func (r *HousingRepo) UpsertImage(ctx context.Context, img model.HousingImage) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO youth_housing.housing_images
+			(home_code, file_id, file_sn, content_type, etag, byte_size, image_data, fetched_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (home_code) DO UPDATE SET
+			file_id      = EXCLUDED.file_id,
+			file_sn      = EXCLUDED.file_sn,
+			content_type = EXCLUDED.content_type,
+			etag         = EXCLUDED.etag,
+			byte_size    = EXCLUDED.byte_size,
+			image_data   = EXCLUDED.image_data,
+			fetched_at   = NOW()
+	`, img.HomeCode, img.FileID, img.FileSn, img.ContentType, img.ETag, len(img.Data), img.Data)
+	if err != nil {
+		return fmt.Errorf("upsert housing_image: %w", err)
+	}
+	return nil
+}
+
+// GetImage returns the stored image bytes and cache metadata for a housing.
+// Returns (nil, nil) when no image is stored.
+func (r *HousingRepo) GetImage(ctx context.Context, homeCode string) (*model.HousingImage, error) {
+	var img model.HousingImage
+	img.HomeCode = homeCode
+	err := r.pool.QueryRow(ctx, `
+		SELECT file_id, file_sn, content_type, etag, image_data
+		FROM youth_housing.housing_images
+		WHERE home_code = $1
+	`, homeCode).Scan(&img.FileID, &img.FileSn, &img.ContentType, &img.ETag, &img.Data)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query housing_image: %w", err)
+	}
+	return &img, nil
 }
 
 func (r *HousingRepo) SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error {

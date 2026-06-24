@@ -13,19 +13,19 @@ type Station struct {
 }
 
 type StationDetail struct {
-	StationID     int              `json:"station_id"`
-	StationCode   string           `json:"station_code"`
-	StationName   string           `json:"station_name"`
-	StationNameEn *string          `json:"station_name_en"`
-	StationNameCn *string          `json:"station_name_cn"`
-	Address       *string          `json:"address"`
-	Phone         *string          `json:"phone"`
-	Latitude      *float64         `json:"latitude"`
-	Longitude     *float64         `json:"longitude"`
-	IsTransfer    bool             `json:"is_transfer"`
-	Lines         []StationLine    `json:"lines"`
+	StationID     int               `json:"station_id"`
+	StationCode   string            `json:"station_code"`
+	StationName   string            `json:"station_name"`
+	StationNameEn *string           `json:"station_name_en"`
+	StationNameCn *string           `json:"station_name_cn"`
+	Address       *string           `json:"address"`
+	Phone         *string           `json:"phone"`
+	Latitude      *float64          `json:"latitude"`
+	Longitude     *float64          `json:"longitude"`
+	IsTransfer    bool              `json:"is_transfer"`
+	Lines         []StationLine     `json:"lines"`
 	Transfers     []StationTransfer `json:"transfers"`
-	Exits         []StationExit    `json:"exits"`
+	Exits         []StationExit     `json:"exits"`
 }
 
 type StationLine struct {

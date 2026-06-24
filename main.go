@@ -64,6 +64,7 @@ func main() {
 		v1.GET("/transfers/:station_id", transferH.GetByStation)
 		v1.GET("/housings", housingH.List)
 		v1.GET("/housings/:home_code", housingH.GetByHomeCode)
+		v1.GET("/housings/:home_code/image", housingH.GetImage)
 		v1.GET("/housings/:home_code/nearby-stations", housingH.NearbyStations)
 		v1.GET("/housings/sync/latest", syncH.PublicLatestStatus)
 		v1.GET("/housings/sync/history", syncH.PublicHistory)

@@ -12,14 +12,14 @@ import (
 )
 
 type mockStationRepo struct {
-	stations    []model.Station
-	total       int
-	detail      *model.StationDetail
-	searchRes   []model.SearchResult
-	nearbyRes   json.RawMessage
-	geojsonRes  json.RawMessage
+	stations     []model.Station
+	total        int
+	detail       *model.StationDetail
+	searchRes    []model.SearchResult
+	nearbyRes    json.RawMessage
+	geojsonRes   json.RawMessage
 	geojsonTotal int
-	err         error
+	err          error
 }
 
 func (m *mockStationRepo) List(_ context.Context, _, _ int) ([]model.Station, int, error) {

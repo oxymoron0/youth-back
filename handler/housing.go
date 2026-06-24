@@ -39,6 +39,32 @@ func (h *HousingHandler) GetByHomeCode(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
+// GetImage serves a housing's stored representative image with strong HTTP
+// caching (ETag + Cache-Control) and 304 revalidation support.
+func (h *HousingHandler) GetImage(c *gin.Context) {
+	homeCode := c.Param("home_code")
+	img, err := h.repo.GetImage(c.Request.Context(), homeCode)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("INTERNAL", err.Error()))
+		return
+	}
+	if img == nil {
+		c.JSON(http.StatusNotFound, errorResponse("NOT_FOUND", "image not found"))
+		return
+	}
+
+	etag := `"` + img.ETag + `"`
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Header("ETag", etag)
+
+	if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	c.Data(http.StatusOK, img.ContentType, img.Data)
+}
+
 func (h *HousingHandler) NearbyStations(c *gin.Context) {
 	homeCode := c.Param("home_code")
 

@@ -12,6 +12,9 @@ type HousingSyncItem struct {
 	SupplyStatus string `json:"supplyStatus"`
 	DepositLow   any    `json:"moneyDepositLow"`
 	RentalLow    any    `json:"moneyRentalLow"`
+	// Representative image reference (used to fetch the image via fileDown.do).
+	FileID string `json:"fileId"`
+	FileSn int    `json:"fileSn"`
 }
 
 // HousingSyncResult represents the outcome of a single sync cycle.
@@ -54,6 +57,17 @@ type HousingDetail struct {
 	Constructor      *string  `json:"constructor"`
 	Latitude         *float64 `json:"latitude"`
 	Longitude        *float64 `json:"longitude"`
+	HasImage         bool     `json:"has_image"`
+}
+
+// HousingImage holds a stored representative image and its HTTP cache metadata.
+type HousingImage struct {
+	HomeCode    string
+	FileID      string
+	FileSn      int
+	ContentType string
+	ETag        string
+	Data        []byte
 }
 
 type NearbyStation struct {
