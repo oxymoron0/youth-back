@@ -129,9 +129,17 @@ func (c *HousingClient) FetchImage(ctx context.Context, fileID string, fileSn in
 		return nil, "", fmt.Errorf("empty image body")
 	}
 
+	// The source sometimes returns a non-image Content-Type (e.g.
+	// application/octet-stream) for actual images. Prefer sniffing the bytes
+	// whenever the header isn't an image type, so stored data is accurate.
 	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
+	if i := strings.IndexByte(contentType, ';'); i >= 0 {
+		contentType = strings.TrimSpace(contentType[:i])
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		if sniffed := http.DetectContentType(data); strings.HasPrefix(sniffed, "image/") || contentType == "" {
+			contentType = sniffed
+		}
 	}
 	return data, contentType, nil
 }

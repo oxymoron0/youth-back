@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"kr-metro-api/repository"
@@ -62,7 +63,14 @@ func (h *HousingHandler) GetImage(c *gin.Context) {
 		return
 	}
 
-	c.Data(http.StatusOK, img.ContentType, img.Data)
+	// Normalize a non-image Content-Type (some sources mislabel images as
+	// application/octet-stream) by sniffing the bytes.
+	contentType := img.ContentType
+	if !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(img.Data)
+	}
+
+	c.Data(http.StatusOK, contentType, img.Data)
 }
 
 func (h *HousingHandler) NearbyStations(c *gin.Context) {

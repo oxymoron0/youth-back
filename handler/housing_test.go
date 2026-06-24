@@ -203,6 +203,30 @@ func TestHousingGetImage_OK(t *testing.T) {
 	}
 }
 
+func TestHousingGetImage_SniffsNonImageContentType(t *testing.T) {
+	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	mock := &mockHousingRepo{
+		image: &model.HousingImage{
+			HomeCode:    "H001",
+			ContentType: "application/octet-stream", // source mislabel
+			ETag:        "abc",
+			Data:        pngMagic,
+		},
+	}
+	r := setupHousingRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/housings/H001/image", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("expected sniffed image/png, got %s", ct)
+	}
+}
+
 func TestHousingGetImage_NotModified(t *testing.T) {
 	mock := &mockHousingRepo{
 		image: &model.HousingImage{
