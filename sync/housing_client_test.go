@@ -78,6 +78,56 @@ func TestFetchList_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseDetailHTML(t *testing.T) {
+	htmlStr := `
+		<script>var xpos = "127.0509544"; var ypos = "37.5806024";</script>
+		<p>대표전화 : 02-6213-5150</p>
+		<p>최초모집공고일 : 2026.06.16</p>
+		<p>입주(예정)일 : 2026-07-20</p>
+		<p>규모 : 총 206 세대 (공공임대 100 세대)</p>
+		<p>시행사 : (주)우리대성문</p>
+		<p>시공사 : ㈜대성문</p>
+		<p>홈페이지 : <a href="https://www.queensw.com">바로가기</a></p>
+	`
+	f := parseDetailHTML(htmlStr)
+
+	if f.Longitude == nil || f.Latitude == nil {
+		t.Fatalf("expected coordinates, got lon=%v lat=%v", f.Longitude, f.Latitude)
+	}
+	if *f.Longitude != 127.0509544 || *f.Latitude != 37.5806024 {
+		t.Errorf("coords mismatch: lon=%v lat=%v", *f.Longitude, *f.Latitude)
+	}
+	if f.Phone != "02-6213-5150" {
+		t.Errorf("phone: %q", f.Phone)
+	}
+	if f.FirstRecruitDate != "2026-06-16" { // normalized from 2026.06.16
+		t.Errorf("first_recruit: %q", f.FirstRecruitDate)
+	}
+	if f.MoveInDate != "2026-07-20" {
+		t.Errorf("move_in: %q", f.MoveInDate)
+	}
+	if f.TotalUnits != "총 206 세대 (공공임대 100 세대)" {
+		t.Errorf("total_units: %q", f.TotalUnits)
+	}
+	if f.Developer != "(주)우리대성문" {
+		t.Errorf("developer: %q", f.Developer)
+	}
+	if f.Constructor != "㈜대성문" {
+		t.Errorf("constructor: %q", f.Constructor)
+	}
+	if f.HomepageURL != "https://www.queensw.com" {
+		t.Errorf("homepage: %q", f.HomepageURL)
+	}
+}
+
+func TestParseDetailHTML_OutOfBoundsCoordsIgnored(t *testing.T) {
+	// coordinates outside Seoul bounds must be ignored
+	f := parseDetailHTML(`<script>var xpos = "0.0"; var ypos = "0.0";</script>`)
+	if f.Longitude != nil || f.Latitude != nil {
+		t.Errorf("expected nil coords for out-of-bounds, got lon=%v lat=%v", f.Longitude, f.Latitude)
+	}
+}
+
 func TestFetchList_MoneyFields(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

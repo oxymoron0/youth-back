@@ -92,6 +92,10 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 		return result
 	}
 
+	// api_count = number of housings the API returned this cycle (used to
+	// detect an increase vs the previous sync).
+	result.APICount = len(items)
+
 	kept := items[:0]
 	for _, item := range items {
 		if _, blocked := blockedHomeCodes[item.HomeCode]; blocked {
@@ -104,7 +108,7 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	items = kept
 	result.FetchedCount = len(items)
 
-	updated, newCount, err := s.repo.UpsertFromListAPI(ctx, items)
+	updated, newHomeCodes, err := s.repo.UpsertFromListAPI(ctx, items)
 	if err != nil {
 		result.Error = err.Error()
 		s.finalize(ctx, &result, startedAt)
@@ -112,7 +116,18 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	}
 
 	result.UpdatedCount = updated
-	result.NewCount = newCount
+	result.NewCount = len(newHomeCodes)
+
+	// Decide whether to run the detail scrape: compare the API housing count
+	// with the previous sync. When it increased, newly inserted housings exist
+	// and their detail fields (coords, phone, dates, ...) need filling.
+	prevCount := s.previousAPICount(ctx)
+	if len(newHomeCodes) > 0 {
+		s.logger.Info("housing count increased; filling new housing details",
+			"prev_api_count", prevCount, "api_count", result.APICount,
+			"new", len(newHomeCodes))
+		s.fillDetails(ctx, newHomeCodes)
+	}
 
 	// Best-effort: download representative images. Image failures must not
 	// fail the sync cycle (images are auxiliary to the housing data).
@@ -120,6 +135,43 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 
 	s.finalize(ctx, &result, startedAt)
 	return result
+}
+
+// previousAPICount returns the api_count recorded by the most recent prior sync
+// (0 if none / unavailable).
+func (s *HousingSync) previousAPICount(ctx context.Context) int {
+	prev, err := s.repo.LatestSyncResult(ctx)
+	if err != nil || prev == nil {
+		return 0
+	}
+	return prev.APICount
+}
+
+// fillDetails scrapes each newly added housing's detail page and fills the
+// fields the list API does not provide. Best-effort: per-housing failures are
+// logged and skipped, never failing the sync cycle.
+func (s *HousingSync) fillDetails(ctx context.Context, homeCodes []string) {
+	var filled, failed int
+	for _, code := range homeCodes {
+		if ctx.Err() != nil {
+			return
+		}
+		detail, err := s.client.FetchDetail(ctx, code)
+		if err != nil {
+			failed++
+			s.logger.Warn("housing detail fetch failed", "home_code", code, "error", err)
+			continue
+		}
+		if err := s.repo.UpdateHousingDetail(ctx, code, detail); err != nil {
+			failed++
+			s.logger.Warn("housing detail store failed", "home_code", code, "error", err)
+			continue
+		}
+		filled++
+	}
+	if filled > 0 || failed > 0 {
+		s.logger.Info("new housing details filled", "filled", filled, "failed", failed)
+	}
 }
 
 // syncImages downloads each housing's representative image (from the list API's

@@ -37,8 +37,12 @@ func (m *mockHousingRepo) NearbyStations(_ context.Context, _ string, _ int) ([]
 	return m.nearbyStations, m.err
 }
 
-func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, int, error) {
-	return 0, 0, nil
+func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, []string, error) {
+	return 0, nil, nil
+}
+
+func (m *mockHousingRepo) UpdateHousingDetail(_ context.Context, _ string, _ model.HousingDetailFields) error {
+	return nil
 }
 
 func (m *mockHousingRepo) SaveSyncResult(_ context.Context, _ model.HousingSyncResult) error {

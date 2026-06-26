@@ -11,19 +11,21 @@ import (
 )
 
 type mockHousingRepo struct {
-	upsertUpdated int
-	upsertNew     int
-	upsertErr     error
-	upsertCalled  bool
-	saveCalled    bool
-	saveResult    model.HousingSyncResult
-	saveErr       error
+	upsertUpdated  int
+	upsertNewCodes []string
+	upsertErr      error
+	upsertCalled   bool
+	saveCalled     bool
+	saveResult     model.HousingSyncResult
+	saveErr        error
+	latest         *model.HousingSyncResult
 	// image tracking
 	imageRefs map[string]struct {
 		fileID string
 		fileSn int
 	}
 	upsertedImages []model.HousingImage
+	detailUpdates  []string
 }
 
 func (m *mockHousingRepo) List(_ context.Context) ([]model.HousingListItem, error) {
@@ -38,9 +40,14 @@ func (m *mockHousingRepo) NearbyStations(_ context.Context, _ string, _ int) ([]
 	return nil, nil
 }
 
-func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, int, error) {
+func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.HousingSyncItem) (int, []string, error) {
 	m.upsertCalled = true
-	return m.upsertUpdated, m.upsertNew, m.upsertErr
+	return m.upsertUpdated, m.upsertNewCodes, m.upsertErr
+}
+
+func (m *mockHousingRepo) UpdateHousingDetail(_ context.Context, homeCode string, _ model.HousingDetailFields) error {
+	m.detailUpdates = append(m.detailUpdates, homeCode)
+	return nil
 }
 
 func (m *mockHousingRepo) SaveSyncResult(_ context.Context, result model.HousingSyncResult) error {
@@ -50,7 +57,7 @@ func (m *mockHousingRepo) SaveSyncResult(_ context.Context, result model.Housing
 }
 
 func (m *mockHousingRepo) LatestSyncResult(_ context.Context) (*model.HousingSyncResult, error) {
-	return nil, nil
+	return m.latest, nil
 }
 
 func (m *mockHousingRepo) RecentSyncHistory(_ context.Context, _ int) ([]model.HousingSyncResult, error) {
@@ -93,14 +100,17 @@ func TestRunOnce_Success(t *testing.T) {
 	}`)
 	defer ts.Close()
 
-	repo := &mockHousingRepo{upsertUpdated: 1, upsertNew: 1}
-	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL)
+	repo := &mockHousingRepo{upsertUpdated: 1, upsertNewCodes: []string{"H002"}}
+	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL).WithDetailURL(ts.URL)
 	syncer := NewHousingSync(client, repo)
 
 	result := syncer.RunOnce(context.Background())
 
 	if result.Error != "" {
 		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.APICount != 2 {
+		t.Errorf("expected api_count 2, got %d", result.APICount)
 	}
 	if result.FetchedCount != 2 {
 		t.Errorf("expected fetched 2, got %d", result.FetchedCount)
@@ -310,6 +320,46 @@ func TestSyncImages_SkipsUnchanged(t *testing.T) {
 
 	if len(repo.upsertedImages) != 0 {
 		t.Fatalf("expected 0 image upserts (unchanged ref), got %d", len(repo.upsertedImages))
+	}
+}
+
+func TestRunOnce_FillsNewHousingDetails(t *testing.T) {
+	listJSON := `{"resultList":[{"homeCode":"H001","homeName":"A","supplyStatus":"02"}]}`
+	detailHTML := `<script>var xpos = "127.05"; var ypos = "37.58";</script><p>대표전화 : 02-1234</p>`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Query().Get("homeCode") != "" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.Write([]byte(detailHTML))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(listJSON))
+	}))
+	defer ts.Close()
+
+	repo := &mockHousingRepo{upsertNewCodes: []string{"H001"}}
+	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL).WithDetailURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	syncer.RunOnce(context.Background())
+
+	if len(repo.detailUpdates) != 1 || repo.detailUpdates[0] != "H001" {
+		t.Fatalf("expected detail update for H001, got %v", repo.detailUpdates)
+	}
+}
+
+func TestRunOnce_NoNewHousings_SkipsDetailFill(t *testing.T) {
+	ts := newTestServer(`{"resultList":[{"homeCode":"H001","homeName":"A","supplyStatus":"02"}]}`)
+	defer ts.Close()
+
+	repo := &mockHousingRepo{upsertUpdated: 1} // no new codes
+	client := NewHousingClient().WithHTTPClient(ts.Client()).WithListURL(ts.URL).WithDetailURL(ts.URL)
+	syncer := NewHousingSync(client, repo)
+
+	syncer.RunOnce(context.Background())
+
+	if len(repo.detailUpdates) != 0 {
+		t.Fatalf("expected no detail fills, got %v", repo.detailUpdates)
 	}
 }
 

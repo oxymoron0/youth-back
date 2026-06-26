@@ -16,7 +16,10 @@ type HousingRepository interface {
 	List(ctx context.Context) ([]model.HousingListItem, error)
 	GetByHomeCode(ctx context.Context, homeCode string) (*model.HousingDetail, error)
 	NearbyStations(ctx context.Context, homeCode string, distanceMeters int) ([]model.NearbyStation, error)
-	UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated, newCount int, err error)
+	// UpsertFromListAPI upserts list-API rows and returns the count of updated
+	// rows and the home_codes of newly inserted (i.e. newly appeared) housings.
+	UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated int, newHomeCodes []string, err error)
+	UpdateHousingDetail(ctx context.Context, homeCode string, d model.HousingDetailFields) error
 	SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error
 	LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error)
 	RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error)
@@ -127,10 +130,10 @@ func (r *HousingRepo) NearbyStations(ctx context.Context, homeCode string, dista
 	return stations, nil
 }
 
-func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated, newCount int, err error) {
+func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated int, newHomeCodes []string, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin tx: %w", err)
+		return 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -159,27 +162,54 @@ func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.Housi
 	}
 
 	br := tx.SendBatch(ctx, batch)
-	for range items {
+	for _, item := range items {
 		var isInsert bool
 		if err := br.QueryRow().Scan(&isInsert); err != nil {
 			br.Close()
-			return 0, 0, fmt.Errorf("upsert scan: %w", err)
+			return 0, nil, fmt.Errorf("upsert scan: %w", err)
 		}
 		if isInsert {
-			newCount++
+			newHomeCodes = append(newHomeCodes, item.HomeCode)
 		} else {
 			updated++
 		}
 	}
 	if err := br.Close(); err != nil {
-		return 0, 0, fmt.Errorf("batch close: %w", err)
+		return 0, nil, fmt.Errorf("batch close: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("commit: %w", err)
+		return 0, nil, fmt.Errorf("commit: %w", err)
 	}
 
-	return updated, newCount, nil
+	return updated, newHomeCodes, nil
+}
+
+// UpdateHousingDetail fills detail-page fields for a housing. Empty/nil values
+// are ignored (COALESCE keeps the existing value) so this is safe to re-run.
+func (r *HousingRepo) UpdateHousingDetail(ctx context.Context, homeCode string, d model.HousingDetailFields) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE youth_housing.housings SET
+			latitude  = COALESCE($2, latitude),
+			longitude = COALESCE($3, longitude),
+			geom = CASE WHEN $2 IS NOT NULL AND $3 IS NOT NULL
+			            THEN ST_SetSRID(ST_MakePoint($3, $2), 4326)
+			            ELSE geom END,
+			phone              = COALESCE(NULLIF($4, ''), phone),
+			homepage_url       = COALESCE(NULLIF($5, ''), homepage_url),
+			first_recruit_date = COALESCE(NULLIF($6, '')::date, first_recruit_date),
+			move_in_date       = COALESCE(NULLIF($7, '')::date, move_in_date),
+			total_units        = COALESCE(NULLIF($8, ''), total_units),
+			developer          = COALESCE(NULLIF($9, ''), developer),
+			constructor        = COALESCE(NULLIF($10, ''), constructor),
+			updated_at = NOW()
+		WHERE home_code = $1
+	`, homeCode, d.Latitude, d.Longitude, d.Phone, d.HomepageURL,
+		d.FirstRecruitDate, d.MoveInDate, d.TotalUnits, d.Developer, d.Constructor)
+	if err != nil {
+		return fmt.Errorf("update housing detail: %w", err)
+	}
+	return nil
 }
 
 // ImageRef returns the stored image's source reference (file_id, file_sn) for a
@@ -248,10 +278,10 @@ func (r *HousingRepo) SaveSyncResult(ctx context.Context, result model.HousingSy
 	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO youth_housing.sync_history
-			(started_at, completed_at, duration_ms, fetched_count, updated_count, new_count, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+			(started_at, completed_at, duration_ms, api_count, fetched_count, updated_count, new_count, error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, result.StartedAt, result.CompletedAt, result.DurationMs,
-		result.FetchedCount, result.UpdatedCount, result.NewCount, errVal)
+		result.APICount, result.FetchedCount, result.UpdatedCount, result.NewCount, errVal)
 	if err != nil {
 		return fmt.Errorf("insert sync_history: %w", err)
 	}
@@ -261,7 +291,7 @@ func (r *HousingRepo) SaveSyncResult(ctx context.Context, result model.HousingSy
 func (r *HousingRepo) LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error) {
 	row := r.pool.QueryRow(ctx, `
 		SELECT started_at, completed_at, duration_ms,
-		       fetched_count, updated_count, new_count, error
+		       api_count, fetched_count, updated_count, new_count, error
 		FROM youth_housing.sync_history
 		ORDER BY started_at DESC
 		LIMIT 1
@@ -285,7 +315,7 @@ func (r *HousingRepo) RecentSyncHistory(ctx context.Context, limit int) ([]model
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT started_at, completed_at, duration_ms,
-		       fetched_count, updated_count, new_count, error
+		       api_count, fetched_count, updated_count, new_count, error
 		FROM youth_housing.sync_history
 		ORDER BY started_at DESC
 		LIMIT $1
@@ -313,9 +343,13 @@ type rowScanner interface {
 func scanSyncResult(row rowScanner) (model.HousingSyncResult, error) {
 	var res model.HousingSyncResult
 	var errVal *string
+	var apiCount *int // nullable (rows predating the api_count column)
 	if err := row.Scan(&res.StartedAt, &res.CompletedAt, &res.DurationMs,
-		&res.FetchedCount, &res.UpdatedCount, &res.NewCount, &errVal); err != nil {
+		&apiCount, &res.FetchedCount, &res.UpdatedCount, &res.NewCount, &errVal); err != nil {
 		return res, err
+	}
+	if apiCount != nil {
+		res.APICount = *apiCount
 	}
 	if errVal != nil {
 		res.Error = *errVal

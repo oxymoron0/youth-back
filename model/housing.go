@@ -19,6 +19,9 @@ type HousingSyncItem struct {
 
 // HousingSyncResult represents the outcome of a single sync cycle.
 type HousingSyncResult struct {
+	// APICount is the number of housings returned by the list API this cycle.
+	// Tracked per sync so an increase vs the previous sync can be detected.
+	APICount     int       `json:"api_count"`
 	FetchedCount int       `json:"fetched_count"`
 	UpdatedCount int       `json:"updated_count"`
 	NewCount     int       `json:"new_count"`
@@ -27,6 +30,21 @@ type HousingSyncResult struct {
 	StartedAt    time.Time `json:"started_at"`
 	CompletedAt  time.Time `json:"completed_at"`
 	Error        string    `json:"error,omitempty"`
+}
+
+// HousingDetailFields holds values scraped from a housing's detail page
+// (coordinates + fields not present in the list API). Empty string / nil
+// means "not found" and is treated as "leave existing value".
+type HousingDetailFields struct {
+	Longitude        *float64
+	Latitude         *float64
+	Phone            string
+	HomepageURL      string
+	FirstRecruitDate string // YYYY-MM-DD or ""
+	MoveInDate       string // YYYY-MM-DD or ""
+	TotalUnits       string
+	Developer        string
+	Constructor      string
 }
 
 type HousingListItem struct {
