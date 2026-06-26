@@ -54,6 +54,15 @@ type HousingListItem struct {
 	AddressGu    *string  `json:"address_gu"`
 	Longitude    *float64 `json:"longitude"`
 	Latitude     *float64 `json:"latitude"`
+	DepositLow   *int64   `json:"deposit_low"`
+	RentalLow    *int64   `json:"rental_low"`
+}
+
+// HousingCoordTarget identifies a housing that still needs coordinates
+// (geocoding fallback input).
+type HousingCoordTarget struct {
+	HomeCode string
+	Address  string
 }
 
 type HousingDetail struct {

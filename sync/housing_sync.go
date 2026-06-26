@@ -22,12 +22,21 @@ var blockedHomeCodes = map[string]struct{}{
 type HousingSync struct {
 	client     *HousingClient
 	repo       repository.HousingRepository
+	geocoder   *Geocoder
 	interval   time.Duration
 	lastResult atomic.Pointer[model.HousingSyncResult]
 	logger     *slog.Logger
 }
 
 type Option func(*HousingSync)
+
+// WithGeocoder enables address→coordinate geocoding fallback. No-op when the
+// geocoder has no credentials.
+func WithGeocoder(g *Geocoder) Option {
+	return func(s *HousingSync) {
+		s.geocoder = g
+	}
+}
 
 func WithInterval(d time.Duration) Option {
 	return func(s *HousingSync) {
@@ -133,8 +142,57 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	// fail the sync cycle (images are auxiliary to the housing data).
 	s.syncImages(ctx, items)
 
+	// Best-effort: fill any still-missing coordinates via geocoding (covers
+	// housings whose detail page lacked xpos/ypos). No-op without credentials.
+	s.backfillCoordinates(ctx)
+
 	s.finalize(ctx, &result, startedAt)
 	return result
+}
+
+// backfillCoordinates geocodes housings that still have no coordinates, using
+// their address. Best-effort: per-housing failures are logged and skipped.
+func (s *HousingSync) backfillCoordinates(ctx context.Context) {
+	if !s.geocoder.Enabled() {
+		return
+	}
+	targets, err := s.repo.HousingsMissingCoords(ctx)
+	if err != nil {
+		s.logger.Warn("query missing-coords housings failed", "error", err)
+		return
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	var filled, failed int
+	for _, t := range targets {
+		if ctx.Err() != nil {
+			return
+		}
+		lng, lat, ok, err := s.geocoder.Geocode(ctx, t.Address)
+		if err != nil {
+			failed++
+			s.logger.Warn("geocode failed", "home_code", t.HomeCode, "error", err)
+			continue
+		}
+		if !ok {
+			failed++
+			s.logger.Warn("geocode no match", "home_code", t.HomeCode, "address", t.Address)
+			continue
+		}
+		if err := s.repo.UpdateHousingDetail(ctx, t.HomeCode,
+			model.HousingDetailFields{Latitude: &lat, Longitude: &lng}); err != nil {
+			failed++
+			s.logger.Warn("geocode store failed", "home_code", t.HomeCode, "error", err)
+			continue
+		}
+		filled++
+	}
+	if filled > 0 || failed > 0 {
+		s.logger.Info("coordinates backfilled via geocoding",
+			"filled", filled, "failed", failed, "candidates", len(targets))
+	}
 }
 
 // previousAPICount returns the api_count recorded by the most recent prior sync

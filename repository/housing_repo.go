@@ -20,6 +20,7 @@ type HousingRepository interface {
 	// rows and the home_codes of newly inserted (i.e. newly appeared) housings.
 	UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated int, newHomeCodes []string, err error)
 	UpdateHousingDetail(ctx context.Context, homeCode string, d model.HousingDetailFields) error
+	HousingsMissingCoords(ctx context.Context) ([]model.HousingCoordTarget, error)
 	SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error
 	LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error)
 	RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error)
@@ -38,7 +39,8 @@ func NewHousingRepo(pool *pgxpool.Pool) *HousingRepo {
 
 func (r *HousingRepo) List(ctx context.Context) ([]model.HousingListItem, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT home_code, home_name, supply_status, address_gu, longitude, latitude
+		SELECT home_code, home_name, supply_status, address_gu, longitude, latitude,
+		       deposit_low, rental_low
 		FROM youth_housing.housings
 		ORDER BY CASE supply_status
 			WHEN '02' THEN 1
@@ -60,7 +62,8 @@ func (r *HousingRepo) List(ctx context.Context) ([]model.HousingListItem, error)
 	for rows.Next() {
 		var h model.HousingListItem
 		if err := rows.Scan(&h.HomeCode, &h.HomeName, &h.SupplyStatus,
-			&h.AddressGu, &h.Longitude, &h.Latitude); err != nil {
+			&h.AddressGu, &h.Longitude, &h.Latitude,
+			&h.DepositLow, &h.RentalLow); err != nil {
 			return nil, err
 		}
 		items = append(items, h)
@@ -210,6 +213,31 @@ func (r *HousingRepo) UpdateHousingDetail(ctx context.Context, homeCode string, 
 		return fmt.Errorf("update housing detail: %w", err)
 	}
 	return nil
+}
+
+// HousingsMissingCoords returns housings that have an address but no coordinates
+// yet — candidates for the geocoding fallback.
+func (r *HousingRepo) HousingsMissingCoords(ctx context.Context) ([]model.HousingCoordTarget, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT home_code, address
+		FROM youth_housing.housings
+		WHERE (latitude IS NULL OR longitude IS NULL OR geom IS NULL)
+		  AND address IS NOT NULL AND btrim(address) <> ''
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query missing-coords housings: %w", err)
+	}
+	defer rows.Close()
+
+	var targets []model.HousingCoordTarget
+	for rows.Next() {
+		var t model.HousingCoordTarget
+		if err := rows.Scan(&t.HomeCode, &t.Address); err != nil {
+			return nil, err
+		}
+		targets = append(targets, t)
+	}
+	return targets, nil
 }
 
 // ImageRef returns the stored image's source reference (file_id, file_sn) for a

@@ -45,8 +45,10 @@ func main() {
 	var housingSync *sync.HousingSync
 	if cfg.SyncEnabled {
 		housingClient := sync.NewHousingClient()
+		geocoder := sync.NewGeocoder(cfg.NaverClientID, cfg.NaverClientSecret)
 		housingSync = sync.NewHousingSync(housingClient, housingRepo,
 			sync.WithInterval(time.Duration(cfg.SyncIntervalMins)*time.Minute),
+			sync.WithGeocoder(geocoder),
 		)
 		go housingSync.Start(ctx)
 	}

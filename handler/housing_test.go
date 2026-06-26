@@ -41,6 +41,10 @@ func (m *mockHousingRepo) UpsertFromListAPI(_ context.Context, _ []model.Housing
 	return 0, nil, nil
 }
 
+func (m *mockHousingRepo) HousingsMissingCoords(_ context.Context) ([]model.HousingCoordTarget, error) {
+	return nil, nil
+}
+
 func (m *mockHousingRepo) UpdateHousingDetail(_ context.Context, _ string, _ model.HousingDetailFields) error {
 	return nil
 }
