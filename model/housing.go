@@ -45,6 +45,9 @@ type HousingDetailFields struct {
 	TotalUnits       string
 	Developer        string
 	Constructor      string
+	// 최저 보증금/월임대료 (목록 API가 null일 때 상세 호실표에서 파싱).
+	DepositLow *int64
+	RentalLow  *int64
 }
 
 type HousingListItem struct {
@@ -52,6 +55,7 @@ type HousingListItem struct {
 	HomeName     string   `json:"home_name"`
 	SupplyStatus string   `json:"supply_status"`
 	AddressGu    *string  `json:"address_gu"`
+	AddressDong  *string  `json:"address_dong"`
 	Longitude    *float64 `json:"longitude"`
 	Latitude     *float64 `json:"latitude"`
 	DepositLow   *int64   `json:"deposit_low"`
@@ -63,6 +67,14 @@ type HousingListItem struct {
 type HousingCoordTarget struct {
 	HomeCode string
 	Address  string
+}
+
+// HousingDongTarget identifies a housing that has coordinates but no dong yet
+// (reverse-geocoding input).
+type HousingDongTarget struct {
+	HomeCode  string
+	Longitude float64
+	Latitude  float64
 }
 
 type HousingDetail struct {

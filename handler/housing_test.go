@@ -45,7 +45,19 @@ func (m *mockHousingRepo) HousingsMissingCoords(_ context.Context) ([]model.Hous
 	return nil, nil
 }
 
+func (m *mockHousingRepo) HousingsMissingRent(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockHousingRepo) UpdateHousingDetail(_ context.Context, _ string, _ model.HousingDetailFields) error {
+	return nil
+}
+
+func (m *mockHousingRepo) HousingsMissingDong(_ context.Context) ([]model.HousingDongTarget, error) {
+	return nil, nil
+}
+
+func (m *mockHousingRepo) UpdateHousingDong(_ context.Context, _, _ string) error {
 	return nil
 }
 

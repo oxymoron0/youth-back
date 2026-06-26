@@ -14,6 +14,16 @@ import (
 
 const defaultInterval = 60 * time.Minute
 
+const (
+	// maxDongBackfillPerCycle bounds reverse-geocode calls per sync cycle so a
+	// large initial backlog is spread across cycles (NCP rate-limit safety).
+	// Remaining housings are picked up by subsequent cycles (idempotent: only
+	// rows with NULL dong are re-queried).
+	maxDongBackfillPerCycle = 200
+	// dongBackfillDelay paces reverse-geocode calls within a cycle.
+	dongBackfillDelay = 100 * time.Millisecond
+)
+
 // blockedHomeCodes lists upstream API records to drop on sync (test/dummy data).
 var blockedHomeCodes = map[string]struct{}{
 	"20000594": {}, // home_name="test26", upstream test record
@@ -146,8 +156,57 @@ func (s *HousingSync) RunOnce(ctx context.Context) model.HousingSyncResult {
 	// housings whose detail page lacked xpos/ypos). No-op without credentials.
 	s.backfillCoordinates(ctx)
 
+	// Best-effort: resolve the dong (洞) of housings that have coordinates but no
+	// dong yet, via reverse geocoding. Enables searching housings by dong name.
+	s.backfillDong(ctx)
+
+	// Best-effort: fill missing rent (deposit/rental) from the detail-page room
+	// table for housings whose list-API rent was null.
+	s.backfillRent(ctx)
+
 	s.finalize(ctx, &result, startedAt)
 	return result
+}
+
+// backfillRent fills deposit/rental for housings whose list-API rent was null,
+// by parsing the lowest 보증금/월임대료 from each housing's detail-page room table.
+// Best-effort: per-housing failures are logged and skipped.
+func (s *HousingSync) backfillRent(ctx context.Context) {
+	codes, err := s.repo.HousingsMissingRent(ctx)
+	if err != nil {
+		s.logger.Warn("query missing-rent housings failed", "error", err)
+		return
+	}
+	if len(codes) == 0 {
+		return
+	}
+
+	var filled, failed int
+	for _, code := range codes {
+		if ctx.Err() != nil {
+			return
+		}
+		detail, err := s.client.FetchDetail(ctx, code)
+		if err != nil {
+			failed++
+			s.logger.Warn("rent detail fetch failed", "home_code", code, "error", err)
+			continue
+		}
+		if detail.DepositLow == nil && detail.RentalLow == nil {
+			// No price table (e.g. closed listing) — nothing to fill.
+			continue
+		}
+		if err := s.repo.UpdateHousingDetail(ctx, code, detail); err != nil {
+			failed++
+			s.logger.Warn("rent store failed", "home_code", code, "error", err)
+			continue
+		}
+		filled++
+	}
+	if filled > 0 || failed > 0 {
+		s.logger.Info("rent backfilled from detail page",
+			"filled", filled, "failed", failed, "candidates", len(codes))
+	}
 }
 
 // backfillCoordinates geocodes housings that still have no coordinates, using
@@ -191,6 +250,63 @@ func (s *HousingSync) backfillCoordinates(ctx context.Context) {
 	}
 	if filled > 0 || failed > 0 {
 		s.logger.Info("coordinates backfilled via geocoding",
+			"filled", filled, "failed", failed, "candidates", len(targets))
+	}
+}
+
+// backfillDong resolves the dong (法定洞) of housings that have coordinates but
+// no dong yet, via reverse geocoding. Best-effort: per-housing failures are
+// logged and skipped. Bounded to maxDongBackfillPerCycle per cycle; the rest are
+// handled by later cycles.
+func (s *HousingSync) backfillDong(ctx context.Context) {
+	if !s.geocoder.Enabled() {
+		return
+	}
+	targets, err := s.repo.HousingsMissingDong(ctx)
+	if err != nil {
+		s.logger.Warn("query missing-dong housings failed", "error", err)
+		return
+	}
+	if len(targets) == 0 {
+		return
+	}
+	if len(targets) > maxDongBackfillPerCycle {
+		targets = targets[:maxDongBackfillPerCycle]
+	}
+
+	var filled, failed int
+	for i, t := range targets {
+		if ctx.Err() != nil {
+			return
+		}
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(dongBackfillDelay):
+			}
+		}
+		_, dong, ok, err := s.geocoder.ReverseGeocode(ctx, t.Longitude, t.Latitude)
+		if err != nil {
+			failed++
+			s.logger.Warn("reverse geocode failed", "home_code", t.HomeCode, "error", err)
+			continue
+		}
+		if !ok {
+			failed++
+			s.logger.Warn("reverse geocode no match",
+				"home_code", t.HomeCode, "lng", t.Longitude, "lat", t.Latitude)
+			continue
+		}
+		if err := s.repo.UpdateHousingDong(ctx, t.HomeCode, dong); err != nil {
+			failed++
+			s.logger.Warn("dong store failed", "home_code", t.HomeCode, "error", err)
+			continue
+		}
+		filled++
+	}
+	if filled > 0 || failed > 0 {
+		s.logger.Info("dong backfilled via reverse geocoding",
 			"filled", filled, "failed", failed, "candidates", len(targets))
 	}
 }

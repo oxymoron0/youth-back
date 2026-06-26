@@ -128,6 +128,36 @@ func TestParseDetailHTML_OutOfBoundsCoordsIgnored(t *testing.T) {
 	}
 }
 
+func TestParseMinRent(t *testing.T) {
+	// Room table: 보증금 월임대료 (예상)관리비 per row; expect the lowest of each.
+	htmlStr := `
+		<table><thead><tr><th>구분</th><th>공급유형</th><th>신청자격</th>
+		<th>전체세대수</th><th>보증금</th><th>월임대료</th><th>(예상)관리비</th></tr></thead>
+		<tbody>
+		<tr><td>원룸</td><td>25A(20.00)</td><td>청년</td><td>13</td><td>92,000,000</td><td>380,000</td><td>110,156</td></tr>
+		<tr><td>원룸</td><td>25A(20.00)</td><td>청년</td><td>42</td><td>110,000,000</td><td>450,000</td><td>110,156</td></tr>
+		<tr><td>1.5룸</td><td>51B(41.40)</td><td>신혼부부</td><td>1</td><td>170,000,000</td><td>700,000</td><td>224,118</td></tr>
+		</tbody></table>`
+	f := parseDetailHTML(htmlStr)
+	if f.DepositLow == nil || f.RentalLow == nil {
+		t.Fatalf("expected rent, got deposit=%v rental=%v", f.DepositLow, f.RentalLow)
+	}
+	if *f.DepositLow != 92000000 {
+		t.Errorf("deposit_low: got %d, want 92000000", *f.DepositLow)
+	}
+	if *f.RentalLow != 380000 {
+		t.Errorf("rental_low: got %d, want 380000", *f.RentalLow)
+	}
+}
+
+func TestParseMinRent_NoTable(t *testing.T) {
+	// No price table (e.g. closed listing) -> nil rent.
+	f := parseDetailHTML(`<p>대표전화 : 02-0000-0000</p>`)
+	if f.DepositLow != nil || f.RentalLow != nil {
+		t.Errorf("expected nil rent without table, got deposit=%v rental=%v", f.DepositLow, f.RentalLow)
+	}
+}
+
 func TestFetchList_MoneyFields(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

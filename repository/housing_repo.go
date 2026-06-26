@@ -21,6 +21,11 @@ type HousingRepository interface {
 	UpsertFromListAPI(ctx context.Context, items []model.HousingSyncItem) (updated int, newHomeCodes []string, err error)
 	UpdateHousingDetail(ctx context.Context, homeCode string, d model.HousingDetailFields) error
 	HousingsMissingCoords(ctx context.Context) ([]model.HousingCoordTarget, error)
+	HousingsMissingRent(ctx context.Context) ([]string, error)
+	// HousingsMissingDong returns housings that have coordinates but no dong yet
+	// (reverse-geocoding candidates).
+	HousingsMissingDong(ctx context.Context) ([]model.HousingDongTarget, error)
+	UpdateHousingDong(ctx context.Context, homeCode, dong string) error
 	SaveSyncResult(ctx context.Context, result model.HousingSyncResult) error
 	LatestSyncResult(ctx context.Context) (*model.HousingSyncResult, error)
 	RecentSyncHistory(ctx context.Context, limit int) ([]model.HousingSyncResult, error)
@@ -39,8 +44,8 @@ func NewHousingRepo(pool *pgxpool.Pool) *HousingRepo {
 
 func (r *HousingRepo) List(ctx context.Context) ([]model.HousingListItem, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT home_code, home_name, supply_status, address_gu, longitude, latitude,
-		       deposit_low, rental_low
+		SELECT home_code, home_name, supply_status, address_gu, address_dong,
+		       longitude, latitude, deposit_low, rental_low
 		FROM youth_housing.housings
 		ORDER BY CASE supply_status
 			WHEN '02' THEN 1
@@ -62,7 +67,7 @@ func (r *HousingRepo) List(ctx context.Context) ([]model.HousingListItem, error)
 	for rows.Next() {
 		var h model.HousingListItem
 		if err := rows.Scan(&h.HomeCode, &h.HomeName, &h.SupplyStatus,
-			&h.AddressGu, &h.Longitude, &h.Latitude,
+			&h.AddressGu, &h.AddressDong, &h.Longitude, &h.Latitude,
 			&h.DepositLow, &h.RentalLow); err != nil {
 			return nil, err
 		}
@@ -148,8 +153,9 @@ func (r *HousingRepo) UpsertFromListAPI(ctx context.Context, items []model.Housi
 		ON CONFLICT (home_code) DO UPDATE SET
 			home_name     = EXCLUDED.home_name,
 			supply_status = EXCLUDED.supply_status,
-			deposit_low   = EXCLUDED.deposit_low,
-			rental_low    = EXCLUDED.rental_low,
+			-- 목록 API가 null로 주는 경우 기존(상세에서 보강한) 값을 보존한다.
+			deposit_low   = COALESCE(EXCLUDED.deposit_low, youth_housing.housings.deposit_low),
+			rental_low    = COALESCE(EXCLUDED.rental_low, youth_housing.housings.rental_low),
 			updated_at    = NOW()
 		RETURNING (xmax = 0) AS is_insert
 	`
@@ -205,10 +211,13 @@ func (r *HousingRepo) UpdateHousingDetail(ctx context.Context, homeCode string, 
 			total_units        = COALESCE(NULLIF($8, ''), total_units),
 			developer          = COALESCE(NULLIF($9, ''), developer),
 			constructor        = COALESCE(NULLIF($10, ''), constructor),
+			deposit_low        = COALESCE($11, deposit_low),
+			rental_low         = COALESCE($12, rental_low),
 			updated_at = NOW()
 		WHERE home_code = $1
 	`, homeCode, d.Latitude, d.Longitude, d.Phone, d.HomepageURL,
-		d.FirstRecruitDate, d.MoveInDate, d.TotalUnits, d.Developer, d.Constructor)
+		d.FirstRecruitDate, d.MoveInDate, d.TotalUnits, d.Developer, d.Constructor,
+		d.DepositLow, d.RentalLow)
 	if err != nil {
 		return fmt.Errorf("update housing detail: %w", err)
 	}
@@ -238,6 +247,70 @@ func (r *HousingRepo) HousingsMissingCoords(ctx context.Context) ([]model.Housin
 		targets = append(targets, t)
 	}
 	return targets, nil
+}
+
+// HousingsMissingRent returns home_codes whose rent (deposit/rental) is missing
+// — candidates for filling from the detail-page room table.
+func (r *HousingRepo) HousingsMissingRent(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT home_code
+		FROM youth_housing.housings
+		WHERE deposit_low IS NULL OR rental_low IS NULL
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query missing-rent housings: %w", err)
+	}
+	defer rows.Close()
+
+	var codes []string
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		codes = append(codes, code)
+	}
+	return codes, nil
+}
+
+// HousingsMissingDong returns housings that have coordinates but no dong yet —
+// candidates for the reverse-geocoding backfill.
+func (r *HousingRepo) HousingsMissingDong(ctx context.Context) ([]model.HousingDongTarget, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT home_code, longitude, latitude
+		FROM youth_housing.housings
+		WHERE address_dong IS NULL
+		  AND longitude IS NOT NULL AND latitude IS NOT NULL
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query missing-dong housings: %w", err)
+	}
+	defer rows.Close()
+
+	var targets []model.HousingDongTarget
+	for rows.Next() {
+		var t model.HousingDongTarget
+		if err := rows.Scan(&t.HomeCode, &t.Longitude, &t.Latitude); err != nil {
+			return nil, err
+		}
+		targets = append(targets, t)
+	}
+	return targets, nil
+}
+
+// UpdateHousingDong sets a housing's dong (법정동) name resolved via reverse
+// geocoding. Empty dong is ignored so this is safe to re-run.
+func (r *HousingRepo) UpdateHousingDong(ctx context.Context, homeCode, dong string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE youth_housing.housings SET
+			address_dong = COALESCE(NULLIF($2, ''), address_dong),
+			updated_at = NOW()
+		WHERE home_code = $1
+	`, homeCode, dong)
+	if err != nil {
+		return fmt.Errorf("update housing dong: %w", err)
+	}
+	return nil
 }
 
 // ImageRef returns the stored image's source reference (file_id, file_sn) for a

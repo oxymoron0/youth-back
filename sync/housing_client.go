@@ -205,7 +205,49 @@ var (
 	reWS     = regexp.MustCompile(`\s+`)
 	reHref   = regexp.MustCompile(`(?i)href\s*=\s*"([^"]+)"`)
 	reDate   = regexp.MustCompile(`(\d{4})[-./](\d{1,2})[-./](\d{1,2})`)
+	reScript = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>`)
+	// 호실표 한 행: 세대수(콤마없는 정수) 보증금 월임대료 (예상)관리비 — 모두 콤마 포함 금액.
+	reRentRow = regexp.MustCompile(`\b\d{1,4}\s+(\d{1,3}(?:,\d{3})+)\s+(\d{1,3}(?:,\d{3})+)\s+\d{1,3}(?:,\d{3})+`)
 )
+
+func parseCommaInt(s string) int64 {
+	n, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// parseMinRent extracts the lowest 보증금/월임대료 from the detail page's room
+// table. Used when the list API does not provide a summary rent. Returns
+// (nil, nil) when no price table is present (e.g. closed listings).
+func parseMinRent(htmlStr string) (depositLow, rentalLow *int64) {
+	text := reWS.ReplaceAllString(reTag.ReplaceAllString(reScript.ReplaceAllString(htmlStr, " "), " "), " ")
+	idx := strings.Index(text, "월임대료")
+	if idx < 0 {
+		return nil, nil
+	}
+	end := idx + 4000
+	if end > len(text) {
+		end = len(text)
+	}
+	var minDep, minRent int64 = -1, -1
+	for _, m := range reRentRow.FindAllStringSubmatch(text[idx:end], -1) {
+		if dep := parseCommaInt(m[1]); dep > 0 && (minDep < 0 || dep < minDep) {
+			minDep = dep
+		}
+		if rent := parseCommaInt(m[2]); rent > 0 && (minRent < 0 || rent < minRent) {
+			minRent = rent
+		}
+	}
+	if minDep > 0 {
+		depositLow = &minDep
+	}
+	if minRent > 0 {
+		rentalLow = &minRent
+	}
+	return depositLow, rentalLow
+}
 
 func normalizeDate(s string) string {
 	m := reDate.FindStringSubmatch(s)
@@ -264,5 +306,6 @@ func parseDetailHTML(htmlStr string) model.HousingDetailFields {
 
 	f.FirstRecruitDate = normalizeDate(f.FirstRecruitDate)
 	f.MoveInDate = normalizeDate(f.MoveInDate)
+	f.DepositLow, f.RentalLow = parseMinRent(htmlStr)
 	return f
 }

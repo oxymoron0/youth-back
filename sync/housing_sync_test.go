@@ -26,6 +26,9 @@ type mockHousingRepo struct {
 	}
 	upsertedImages []model.HousingImage
 	detailUpdates  []string
+	// dong backfill tracking
+	dongTargets []model.HousingDongTarget
+	dongUpdates map[string]string
 }
 
 func (m *mockHousingRepo) List(_ context.Context) ([]model.HousingListItem, error) {
@@ -49,8 +52,24 @@ func (m *mockHousingRepo) HousingsMissingCoords(_ context.Context) ([]model.Hous
 	return nil, nil
 }
 
+func (m *mockHousingRepo) HousingsMissingRent(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockHousingRepo) UpdateHousingDetail(_ context.Context, homeCode string, _ model.HousingDetailFields) error {
 	m.detailUpdates = append(m.detailUpdates, homeCode)
+	return nil
+}
+
+func (m *mockHousingRepo) HousingsMissingDong(_ context.Context) ([]model.HousingDongTarget, error) {
+	return m.dongTargets, nil
+}
+
+func (m *mockHousingRepo) UpdateHousingDong(_ context.Context, homeCode, dong string) error {
+	if m.dongUpdates == nil {
+		m.dongUpdates = map[string]string{}
+	}
+	m.dongUpdates[homeCode] = dong
 	return nil
 }
 
@@ -364,6 +383,49 @@ func TestRunOnce_NoNewHousings_SkipsDetailFill(t *testing.T) {
 
 	if len(repo.detailUpdates) != 0 {
 		t.Fatalf("expected no detail fills, got %v", repo.detailUpdates)
+	}
+}
+
+func TestRunOnce_BackfillsDong(t *testing.T) {
+	listTS := newTestServer(`{"resultList":[{"homeCode":"H001","homeName":"A","supplyStatus":"02"}]}`)
+	defer listTS.Close()
+
+	reverseTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":{"code":0,"name":"ok"},"results":[{"region":{"area2":{"name":"성동구"},"area3":{"name":"성수동1가"}}}]}`))
+	}))
+	defer reverseTS.Close()
+
+	repo := &mockHousingRepo{
+		upsertUpdated: 1,
+		dongTargets:   []model.HousingDongTarget{{HomeCode: "H001", Longitude: 127.05, Latitude: 37.54}},
+	}
+	client := NewHousingClient().WithHTTPClient(listTS.Client()).WithListURL(listTS.URL).WithDetailURL(listTS.URL)
+	geocoder := NewGeocoder("id", "secret").WithHTTPClient(reverseTS.Client()).WithReverseURL(reverseTS.URL)
+	syncer := NewHousingSync(client, repo, WithGeocoder(geocoder))
+
+	syncer.RunOnce(context.Background())
+
+	if got := repo.dongUpdates["H001"]; got != "성수동1가" {
+		t.Fatalf("expected dong 성수동1가 for H001, got %q", got)
+	}
+}
+
+func TestRunOnce_BackfillDong_NoopWithoutGeocoder(t *testing.T) {
+	listTS := newTestServer(`{"resultList":[{"homeCode":"H001","homeName":"A","supplyStatus":"02"}]}`)
+	defer listTS.Close()
+
+	repo := &mockHousingRepo{
+		upsertUpdated: 1,
+		dongTargets:   []model.HousingDongTarget{{HomeCode: "H001", Longitude: 127.05, Latitude: 37.54}},
+	}
+	client := NewHousingClient().WithHTTPClient(listTS.Client()).WithListURL(listTS.URL).WithDetailURL(listTS.URL)
+	syncer := NewHousingSync(client, repo) // no geocoder
+
+	syncer.RunOnce(context.Background())
+
+	if len(repo.dongUpdates) != 0 {
+		t.Fatalf("expected no dong updates without geocoder, got %v", repo.dongUpdates)
 	}
 }
 
